@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 
+use numpy::IntoPyArray;
 use numpy::{npyffi, PyArray1, PyArrayMethods};
 use pyo3::class::basic::CompareOp;
 use pyo3::exceptions;
@@ -1117,6 +1118,54 @@ impl PyTokenizer {
             )
             .into()
         })
+    }
+
+    #[pyo3(signature = (input, is_pretokenized = false, add_special_tokens = true))]
+    #[pyo3(text_signature = "(self, input, is_pretokenized=False, add_special_tokens=True)")]
+    fn arp_encode_batch_fast(
+        &self,
+        py: Python<'_>,
+        input: Vec<Bound<'_, PyAny>>,
+        is_pretokenized: bool,
+        add_special_tokens: bool,
+    ) -> PyResult<Vec<PyObject>> {
+        let mut items = Vec::with_capacity(input.len());
+        for item in &input {
+            let item: tk::EncodeInput = if is_pretokenized {
+                item.extract::<PreTokenizedEncodeInput>()?.into()
+            } else {
+                item.extract::<TextEncodeInput>()?.into()
+            };
+            items.push(item);
+        }
+
+        let encodings = py.allow_threads(|| {
+            self.tokenizer
+                .encode_batch_fast(items, add_special_tokens)
+                .map_err(|e| PyErr::new::<exceptions::PyValueError, _>(e.to_string()))
+        })?;
+
+        let mut results = Vec::with_capacity(encodings.len());
+        for encoding in encodings {
+            let dict = PyDict::new(py);
+
+            // Convert each field from Vec<u32> to Vec<i64> (to match np.int64)
+            let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
+            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&x| x as i64).collect();
+            let attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&x| x as i64)
+                .collect();
+
+            dict.set_item("input_ids", PyArray1::from_vec(py, ids))?;
+            dict.set_item("token_type_ids", PyArray1::from_vec(py, type_ids))?;
+            dict.set_item("attention_mask", PyArray1::from_vec(py, attention_mask))?;
+
+            results.push(dict.into_py(py));
+        }
+
+        Ok(results)
     }
 
     /// Decode the given list of ids back to a string
