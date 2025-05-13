@@ -2,8 +2,7 @@ use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 
-use numpy::IntoPyArray;
-use numpy::{npyffi, PyArray1, PyArrayMethods};
+use numpy::{npyffi, PyArray1, PyArray2, PyArrayMethods};
 use pyo3::class::basic::CompareOp;
 use pyo3::exceptions;
 use pyo3::intern;
@@ -1119,7 +1118,6 @@ impl PyTokenizer {
             .into()
         })
     }
-
     #[pyo3(signature = (input, is_pretokenized = false, add_special_tokens = true))]
     #[pyo3(text_signature = "(self, input, is_pretokenized=False, add_special_tokens=True)")]
     fn arp_encode_batch_fast(
@@ -1128,7 +1126,7 @@ impl PyTokenizer {
         input: Vec<Bound<'_, PyAny>>,
         is_pretokenized: bool,
         add_special_tokens: bool,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<PyObject> {
         let mut items = Vec::with_capacity(input.len());
         for item in &input {
             let item: tk::EncodeInput = if is_pretokenized {
@@ -1145,27 +1143,43 @@ impl PyTokenizer {
                 .map_err(|e| PyErr::new::<exceptions::PyValueError, _>(e.to_string()))
         })?;
 
-        let mut results = Vec::with_capacity(encodings.len());
-        for encoding in encodings {
-            let dict = PyDict::new(py);
+        let mut ids_batch = Vec::with_capacity(encodings.len());
+        let mut type_ids_batch = Vec::with_capacity(encodings.len());
+        let mut attention_mask_batch = Vec::with_capacity(encodings.len());
 
-            // Convert each field from Vec<u32> to Vec<i64> (to match np.int64)
-            let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
-            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&x| x as i64).collect();
-            let attention_mask: Vec<i64> = encoding
-                .get_attention_mask()
-                .iter()
-                .map(|&x| x as i64)
-                .collect();
-
-            dict.set_item("input_ids", PyArray1::from_vec(py, ids))?;
-            dict.set_item("token_type_ids", PyArray1::from_vec(py, type_ids))?;
-            dict.set_item("attention_mask", PyArray1::from_vec(py, attention_mask))?;
-
-            results.push(dict.into_py(py));
+        for encoding in &encodings {
+            ids_batch.push(
+                encoding
+                    .get_ids()
+                    .iter()
+                    .map(|&x| x as i64)
+                    .collect::<Vec<_>>(),
+            );
+            type_ids_batch.push(
+                encoding
+                    .get_type_ids()
+                    .iter()
+                    .map(|&x| x as i64)
+                    .collect::<Vec<_>>(),
+            );
+            attention_mask_batch.push(
+                encoding
+                    .get_attention_mask()
+                    .iter()
+                    .map(|&x| x as i64)
+                    .collect::<Vec<_>>(),
+            );
         }
 
-        Ok(results)
+        let dict = PyDict::new(py);
+        dict.set_item("input_ids", PyArray2::from_vec2(py, &ids_batch)?)?;
+        dict.set_item("token_type_ids", PyArray2::from_vec2(py, &type_ids_batch)?)?;
+        dict.set_item(
+            "attention_mask",
+            PyArray2::from_vec2(py, &attention_mask_batch)?,
+        )?;
+
+        Ok(dict.into_py(py))
     }
 
     /// Decode the given list of ids back to a string
